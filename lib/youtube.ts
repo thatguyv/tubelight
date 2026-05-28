@@ -250,32 +250,52 @@ async function fetchTranscriptViaBrowser(
 
 // ─── Public fetch function ────────────────────────────────────────────────────
 
+// When user picks "Auto-detect", try English first then any available language.
+// This prevents non-English videos (with English + other tracks) from defaulting
+// to a random language depending on track order.
+const AUTO_LANG_PREFERENCE = ["en", undefined] as const;
+
 export async function fetchVideoTranscript(
   videoId: string,
   lang?: string,
 ): Promise<TranscriptResult> {
+  // If a specific language is requested, try only that language.
+  // If auto-detect (undefined), iterate through preferred languages until one works.
+  const attempts: (string | undefined)[] =
+    lang ? [lang] : [...AUTO_LANG_PREFERENCE];
+
   let segments: TranscriptSegment[] | null = null;
   let lastError: unknown;
+  let resolvedLang = lang ?? "en";
 
-  // 1. Supadata (most reliable from cloud servers, free tier)
-  if (process.env.SUPADATA_API_KEY) {
-    try {
-      segments = await fetchViaSupadata(videoId, lang);
-      console.log(`[transcript] fetched via Supadata (${segments.length} segments)`);
-    } catch (err) {
-      lastError = err;
-      console.warn("[transcript] Supadata failed, falling back to page-fetch:", String(err));
+  for (const tryLang of attempts) {
+    segments = null;
+
+    // 1. Supadata (most reliable from cloud servers)
+    if (process.env.SUPADATA_API_KEY) {
+      try {
+        segments = await fetchViaSupadata(videoId, tryLang);
+        console.log(`[transcript] Supadata OK lang=${tryLang ?? "auto"} (${segments.length} segs)`);
+      } catch (err) {
+        lastError = err;
+        console.warn(`[transcript] Supadata failed lang=${tryLang ?? "auto"}:`, String(err));
+      }
     }
-  }
 
-  // 2. Direct page-fetch fallback
-  if (!segments || segments.length === 0) {
-    try {
-      segments = await fetchTranscriptViaBrowser(videoId, lang);
-      console.log(`[transcript] fetched via page-fetch (${segments.length} segments)`);
-    } catch (err) {
-      lastError = err;
-      console.warn("[transcript] page-fetch failed:", String(err));
+    // 2. Direct page-fetch fallback
+    if (!segments || segments.length === 0) {
+      try {
+        segments = await fetchTranscriptViaBrowser(videoId, tryLang);
+        console.log(`[transcript] page-fetch OK lang=${tryLang ?? "auto"} (${segments.length} segs)`);
+      } catch (err) {
+        lastError = err;
+        console.warn(`[transcript] page-fetch failed lang=${tryLang ?? "auto"}:`, String(err));
+      }
+    }
+
+    if (segments && segments.length > 0) {
+      resolvedLang = tryLang ?? "en";
+      break;
     }
   }
 
@@ -289,7 +309,7 @@ export async function fetchVideoTranscript(
 
   return {
     segments,
-    language: lang ?? "en",
+    language: resolvedLang,
     fullText: segments.map((s) => s.text).join(" "),
     totalDurationSec,
   };
