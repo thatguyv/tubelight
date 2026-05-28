@@ -1,7 +1,27 @@
 import { Agent } from "@cursor/sdk";
 import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
 
 const MODEL_ID = process.env.CURSOR_MODEL || "composer-2.5";
+
+/**
+ * On Vercel (and other cloud Lambdas) the home directory exists but
+ * ~/.cursor/projects/ does not, so the SDK's mkdir call fails with ENOENT.
+ * Redirecting HOME to /tmp (the only writable directory) lets the SDK
+ * create its store under /tmp/.cursor/... without any issues.
+ */
+function ensureWritableHome() {
+  const home = os.homedir();
+  const cursorDir = path.join(home, ".cursor", "projects");
+  try {
+    fs.mkdirSync(cursorDir, { recursive: true });
+  } catch {
+    // Home dir not writable — redirect to /tmp
+    process.env.HOME = "/tmp";
+    fs.mkdirSync(path.join("/tmp", ".cursor", "projects"), { recursive: true });
+  }
+}
 
 export interface RunOptions {
   /** Free-form system instructions (sets the role). */
@@ -23,6 +43,7 @@ function requireKey(): string {
 }
 
 async function runPrompt(message: string): Promise<string> {
+  ensureWritableHome();
   const apiKey = requireKey();
   const result = await Agent.prompt(message, {
     apiKey,
@@ -69,6 +90,7 @@ export async function runJsonPrompt<T>(opts: RunOptions): Promise<T> {
 
 /** Stream raw text tokens from the SDK for a single prompt. */
 export async function* streamText(message: string): AsyncGenerator<string> {
+  ensureWritableHome();
   const apiKey = requireKey();
   const agent = await Agent.create({
     apiKey,
