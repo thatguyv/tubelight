@@ -4,6 +4,16 @@ import fs from "node:fs";
 import path from "node:path";
 
 const MODEL_ID = process.env.CURSOR_MODEL || "composer-2.5";
+// "high" gives noticeably better quiz/flashcard reasoning; "low" is faster.
+const THINKING: "low" | "high" =
+  (process.env.CURSOR_THINKING as "low" | "high") || "high";
+
+function modelSelection() {
+  return {
+    id: MODEL_ID,
+    params: [{ id: "thinking", value: THINKING }],
+  };
+}
 
 /**
  * On Vercel (and other cloud Lambdas) the home directory exists but
@@ -47,7 +57,7 @@ async function runPrompt(message: string): Promise<string> {
   const apiKey = requireKey();
   const result = await Agent.prompt(message, {
     apiKey,
-    model: { id: MODEL_ID },
+    model: modelSelection(),
     local: { cwd: os.tmpdir() },
   });
   return result.result ?? "";
@@ -94,7 +104,7 @@ export async function* streamText(message: string): AsyncGenerator<string> {
   const apiKey = requireKey();
   const agent = await Agent.create({
     apiKey,
-    model: { id: MODEL_ID },
+    model: modelSelection(),
     local: { cwd: os.tmpdir() },
   });
   try {

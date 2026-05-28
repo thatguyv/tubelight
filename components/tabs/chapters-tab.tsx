@@ -1,6 +1,6 @@
 "use client";
 
-import { Play } from "lucide-react";
+import { Clock, Play } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { SectionStatus } from "@/components/section-status";
@@ -43,14 +43,19 @@ export function ChaptersTab() {
                   <button
                     type="button"
                     onClick={() => seekTo(c.start)}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-secondary px-2 py-0.5 font-mono text-xs hover:bg-brand hover:text-brand-foreground"
+                    className="inline-flex items-center gap-1.5 rounded-md bg-secondary px-2 py-0.5 font-mono text-xs transition hover:bg-brand hover:text-brand-foreground"
                     aria-label={`Jump to ${formatTime(c.start)}`}
+                    title="Click to jump to this chapter"
                   >
                     <Play className="size-3" />
                     {formatTime(c.start)}
                   </button>
-                  <span className="text-xs text-muted-foreground">
-                    {formatTime(c.end - c.start)}
+                  <span
+                    className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+                    title="Chapter length"
+                  >
+                    <Clock className="size-3" />
+                    {formatTime(c.end - c.start)} long
                   </span>
                   {isActive && <Badge variant="brand">Now playing</Badge>}
                 </div>

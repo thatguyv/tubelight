@@ -22,6 +22,39 @@ const ALL_SECTIONS: SectionId[] = [
   "quotes",
 ];
 
+// Schedule heavier / slower sections FIRST so they don't sit waiting
+// for short ones to free up a worker slot near the function's time budget.
+const SCHEDULE_ORDER: SectionId[] = [
+  "mindmap",   // heaviest with thinking:high
+  "summary",
+  "quiz",
+  "chapters",
+  "flashcards",
+  "actions",
+  "quotes",
+];
+
+const SECTION_TIMEOUT_MS = 50_000; // hard cap per section so one slow call can't kill the stream
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
 interface GenerateBody {
   meta: VideoMeta;
   transcript: TranscriptSegment[];
@@ -47,9 +80,11 @@ export async function POST(req: Request) {
     );
   }
 
-  const sections = (body.sections && body.sections.length > 0 ? body.sections : ALL_SECTIONS).filter((s) =>
+  const requested = (body.sections && body.sections.length > 0 ? body.sections : ALL_SECTIONS).filter((s) =>
     ALL_SECTIONS.includes(s),
   );
+  // Reorder requested sections into our optimal schedule order
+  const sections = SCHEDULE_ORDER.filter((s) => requested.includes(s));
   const outputLanguage = body.outputLanguage || "English";
 
   const encoder = new TextEncoder();
@@ -65,7 +100,7 @@ export async function POST(req: Request) {
 
       const tasks: Array<{ id: SectionId; run: () => Promise<unknown> }> = sections.map((id) => ({
         id,
-        run: () => runSection(id, input),
+        run: () => withTimeout(runSection(id, input), SECTION_TIMEOUT_MS, id),
       }));
 
       const CONCURRENCY = 3;

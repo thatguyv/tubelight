@@ -137,6 +137,20 @@ export function UrlInput({ initialUrl = "", compact = false }: UrlInputProps) {
         },
       );
 
+      // Safety net: if the stream ended without emitting events for some
+      // sections (e.g. function timed out mid-flight on the server), mark
+      // those sections as failed so the UI doesn't show an infinite spinner.
+      const stateAfter = useNotesStore.getState();
+      ALL_SECTIONS.forEach((s) => {
+        if (stateAfter.sectionStatus[s].loading) {
+          stateAfter.setSectionError(
+            s,
+            "Generation timed out. Try regenerating — usually works on retry.",
+          );
+        }
+      });
+      stateAfter.setGenerating(false);
+
       const finalPayload = useNotesStore.getState().payload;
       if (finalPayload) {
         await saveNotes(finalPayload);
