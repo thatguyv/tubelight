@@ -4,6 +4,60 @@ import { canonicalUrl, thumbnailUrl } from "./youtube-id";
 
 export { parseVideoId, canonicalUrl, thumbnailUrl } from "./youtube-id";
 
+// ─── Supadata API ─────────────────────────────────────────────────────────────
+
+interface SupadataSegment {
+  text: string;
+  offset: number;   // ms
+  duration: number; // ms
+  lang?: string;
+}
+
+interface SupadataResponse {
+  content: SupadataSegment[];
+  lang: string;
+  availableLangs?: string[];
+  error?: string;
+}
+
+/**
+ * Fetch transcript via Supadata (https://supadata.ai).
+ * Requires SUPADATA_API_KEY env var.
+ * Free tier: 100 transcripts/day — enough for a personal project.
+ */
+async function fetchViaSupadata(
+  videoId: string,
+  lang?: string,
+): Promise<TranscriptSegment[]> {
+  const apiKey = process.env.SUPADATA_API_KEY;
+  if (!apiKey) throw new Error("SUPADATA_API_KEY not set");
+
+  const url = new URL("https://api.supadata.ai/v1/youtube/transcript");
+  url.searchParams.set("url", canonicalUrl(videoId));
+  if (lang) url.searchParams.set("lang", lang);
+  url.searchParams.set("text", "false"); // return structured segments
+
+  const res = await fetch(url.toString(), {
+    headers: { "x-api-key": apiKey },
+    next: { revalidate: 0 },
+  });
+
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as SupadataResponse;
+    throw new Error(
+      `Supadata API error ${res.status}: ${body.error ?? res.statusText}`,
+    );
+  }
+
+  const data = (await res.json()) as SupadataResponse;
+
+  return (data.content ?? []).map((s) => ({
+    text: decodeEntities(s.text ?? ""),
+    start: (s.offset ?? 0) / 1000,
+    duration: (s.duration ?? 2000) / 1000,
+  }));
+}
+
 export async function fetchOEmbed(videoId: string): Promise<Partial<VideoMeta>> {
   try {
     const res = await fetch(
@@ -200,7 +254,35 @@ export async function fetchVideoTranscript(
   videoId: string,
   lang?: string,
 ): Promise<TranscriptResult> {
-  const segments = await fetchTranscriptViaBrowser(videoId, lang);
+  let segments: TranscriptSegment[] | null = null;
+  let lastError: unknown;
+
+  // 1. Supadata (most reliable from cloud servers, free tier)
+  if (process.env.SUPADATA_API_KEY) {
+    try {
+      segments = await fetchViaSupadata(videoId, lang);
+      console.log(`[transcript] fetched via Supadata (${segments.length} segments)`);
+    } catch (err) {
+      lastError = err;
+      console.warn("[transcript] Supadata failed, falling back to page-fetch:", String(err));
+    }
+  }
+
+  // 2. Direct page-fetch fallback
+  if (!segments || segments.length === 0) {
+    try {
+      segments = await fetchTranscriptViaBrowser(videoId, lang);
+      console.log(`[transcript] fetched via page-fetch (${segments.length} segments)`);
+    } catch (err) {
+      lastError = err;
+      console.warn("[transcript] page-fetch failed:", String(err));
+    }
+  }
+
+  if (!segments || segments.length === 0) {
+    if (lastError) throw lastError;
+    throw new Error("No caption tracks found for this video");
+  }
 
   const last = segments[segments.length - 1];
   const totalDurationSec = last ? last.start + last.duration : 0;
