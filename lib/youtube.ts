@@ -1,5 +1,4 @@
 import "server-only";
-import { fetchTranscript } from "youtube-transcript-plus";
 import type { TranscriptResult, TranscriptSegment, VideoMeta } from "./types";
 import { canonicalUrl, thumbnailUrl } from "./youtube-id";
 
@@ -29,57 +28,186 @@ export async function fetchOEmbed(videoId: string): Promise<Partial<VideoMeta>> 
   }
 }
 
-const USER_AGENTS = [
-  // Recent Chrome on macOS
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  // Recent Chrome on Windows
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  // iPhone Safari
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-];
+// ─── Browser-like headers ────────────────────────────────────────────────────
+
+const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  // Bypass GDPR consent wall
+  "Cookie": "CONSENT=YES+42; SOCS=CAESEwgDEgk0OTI5NzIxMjgaAmVuIAEaBgiA_LyaBg",
+};
+
+interface CaptionTrack {
+  baseUrl: string;
+  languageCode: string;
+  name: { simpleText?: string };
+  vssId?: string;
+}
+
+interface Json3Event {
+  tStartMs?: number;
+  dDurationMs?: number;
+  segs?: Array<{ utf8?: string }>;
+}
+
+// ─── JSON extraction helper ───────────────────────────────────────────────────
+
+/**
+ * Extracts the first complete JSON object that starts at `startIdx` in `html`.
+ * Uses brace/bracket counting and properly skips over string literals so it
+ * doesn't confuse a `{` or `}` inside a string for a structural brace.
+ */
+function extractJsonObject(html: string, startIdx: number): string | null {
+  let depth = 0;
+  let i = startIdx;
+  const len = html.length;
+
+  while (i < len) {
+    const ch = html[i];
+    if (ch === "{" || ch === "[") {
+      depth++;
+    } else if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0) return html.slice(startIdx, i + 1);
+    } else if (ch === '"') {
+      // skip over string literal
+      i++;
+      while (i < len) {
+        if (html[i] === "\\") { i += 2; continue; }
+        if (html[i] === '"') break;
+        i++;
+      }
+    }
+    i++;
+  }
+  return null;
+}
+
+// ─── Direct page-fetch transcript fetcher ────────────────────────────────────
+
+/**
+ * Fetches the YouTube watch page, extracts the caption track list from
+ * `ytInitialPlayerResponse`, picks the best language match, then fetches
+ * the timedtext in JSON3 format.
+ *
+ * This approach works from cloud servers (Vercel, AWS) because it mimics a
+ * normal browser page load rather than calling the Innertube API directly.
+ */
+async function fetchTranscriptViaBrowser(
+  videoId: string,
+  lang?: string,
+): Promise<TranscriptSegment[]> {
+  const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+    headers: BROWSER_HEADERS,
+  });
+
+  if (!pageRes.ok) {
+    throw new Error(`YouTube watch page returned ${pageRes.status}`);
+  }
+
+  const html = await pageRes.text();
+
+  // Extract ytInitialPlayerResponse
+  const marker = "ytInitialPlayerResponse = ";
+  const markerIdx = html.indexOf(marker);
+  if (markerIdx === -1) {
+    // Might be a bot-check or consent page
+    if (html.includes("consent.youtube.com") || html.includes("accounts.google.com")) {
+      throw new Error("YouTube returned a consent/sign-in wall — 403 blocked from this server");
+    }
+    throw new Error("ytInitialPlayerResponse not found in page HTML");
+  }
+
+  const jsonStr = extractJsonObject(html, markerIdx + marker.length);
+  if (!jsonStr) throw new Error("Could not extract ytInitialPlayerResponse JSON");
+
+  let playerResponse: Record<string, unknown>;
+  try {
+    playerResponse = JSON.parse(jsonStr) as Record<string, unknown>;
+  } catch {
+    throw new Error("Failed to parse ytInitialPlayerResponse JSON");
+  }
+
+  // Check if the video is actually playable
+  const playability = (playerResponse.playabilityStatus as Record<string, unknown> | undefined);
+  const playStatus = playability?.status as string | undefined;
+  if (playStatus && playStatus !== "OK" && playStatus !== "LIVE_STREAM_OFFLINE") {
+    throw new Error(`Video not playable: ${playStatus} — ${(playability?.reason as string) ?? ""}`);
+  }
+
+  // Extract caption tracks
+  const captionTracks = (
+    (playerResponse.captions as Record<string, unknown> | undefined)
+      ?.playerCaptionsTracklistRenderer as Record<string, unknown> | undefined
+  )?.captionTracks as CaptionTrack[] | undefined;
+
+  if (!captionTracks || captionTracks.length === 0) {
+    throw new Error("No caption tracks found — captions may be disabled for this video");
+  }
+
+  // Pick the best language match
+  let track: CaptionTrack | undefined;
+  if (lang) {
+    track =
+      captionTracks.find((t) => t.languageCode === lang) ??
+      captionTracks.find((t) => t.languageCode.startsWith(lang)) ??
+      captionTracks.find((t) => t.vssId === `.${lang}`) ??
+      captionTracks[0];
+  } else {
+    // Prefer English auto-generated or manually created English, else first track
+    track =
+      captionTracks.find((t) => t.languageCode === "en" && t.vssId?.startsWith("a.")) ??
+      captionTracks.find((t) => t.languageCode === "en") ??
+      captionTracks[0];
+  }
+
+  if (!track?.baseUrl) throw new Error("Caption track has no baseUrl");
+
+  // Fetch timedtext JSON3 format
+  const timedtextRes = await fetch(`${track.baseUrl}&fmt=json3`, {
+    headers: {
+      "User-Agent": BROWSER_HEADERS["User-Agent"],
+      "Referer": `https://www.youtube.com/watch?v=${videoId}`,
+    },
+  });
+  if (!timedtextRes.ok) throw new Error(`Timedtext fetch failed: ${timedtextRes.status}`);
+
+  const data = (await timedtextRes.json()) as { events?: Json3Event[] };
+
+  const segments: TranscriptSegment[] = (data.events ?? [])
+    .filter((e) => e.segs && e.segs.length > 0 && e.tStartMs !== undefined)
+    .map((e) => ({
+      text: decodeEntities(
+        e.segs!
+          .map((s) => s.utf8 ?? "")
+          .join("")
+          .replace(/\n/g, " ")
+          .trim(),
+      ),
+      start: (e.tStartMs ?? 0) / 1000,
+      duration: (e.dDurationMs ?? 2000) / 1000,
+    }))
+    .filter((s) => s.text.length > 0);
+
+  return segments;
+}
+
+// ─── Public fetch function ────────────────────────────────────────────────────
 
 export async function fetchVideoTranscript(
   videoId: string,
   lang?: string,
 ): Promise<TranscriptResult> {
-  let lastError: unknown = null;
-  let raw: Awaited<ReturnType<typeof fetchTranscript>> | null = null;
+  const segments = await fetchTranscriptViaBrowser(videoId, lang);
 
-  // Try each user-agent in turn — helps when YouTube starts blocking a specific UA
-  for (const userAgent of USER_AGENTS) {
-    try {
-      raw = await fetchTranscript(videoId, {
-        lang,
-        retries: 2,
-        retryDelay: 1000,
-        userAgent,
-      });
-      if (raw && raw.length > 0) break;
-    } catch (err) {
-      lastError = err;
-      // small jitter before next UA attempt
-      await new Promise((r) => setTimeout(r, 250));
-    }
-  }
-
-  if (!raw || raw.length === 0) {
-    if (lastError) throw lastError;
-    return { segments: [], language: lang ?? "en", fullText: "", totalDurationSec: 0 };
-  }
-
-  const segments: TranscriptSegment[] = raw.map((r) => ({
-    text: decodeEntities(r.text ?? ""),
-    start: typeof r.offset === "number" ? r.offset : 0,
-    duration: typeof r.duration === "number" ? r.duration : 0,
-  }));
-
-  const language = (raw[0] && "lang" in raw[0] ? (raw[0] as { lang?: string }).lang : undefined) ?? lang ?? "en";
   const last = segments[segments.length - 1];
   const totalDurationSec = last ? last.start + last.duration : 0;
 
   return {
     segments,
-    language,
+    language: lang ?? "en",
     fullText: segments.map((s) => s.text).join(" "),
     totalDurationSec,
   };
