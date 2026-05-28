@@ -304,36 +304,41 @@ export function UrlInput({ initialUrl = "", compact = false }: UrlInputProps) {
       </div>
 
       {!compact && (
-        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          <div className="flex items-center gap-2">
-            <span>Captions:</span>
-            <Select value={lang} onValueChange={setLang} disabled={busy}>
-              <SelectTrigger className="h-8 w-36 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {LANG_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span>Notes language:</span>
-            <Select value={outputLanguage} onValueChange={setOutputLanguage} disabled={busy}>
-              <SelectTrigger className="h-8 w-36 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {OUTPUT_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <div className="flex justify-center">
+          <div className="inline-flex items-center divide-x divide-border overflow-hidden rounded-full border bg-card/60 text-xs shadow-sm">
+            {/* Captions language */}
+            <div className="flex items-center gap-1.5 px-3 py-1.5">
+              <span className="font-medium text-muted-foreground">Captions</span>
+              <Select value={lang} onValueChange={setLang} disabled={busy}>
+                <SelectTrigger className="h-auto w-auto min-w-[100px] border-0 bg-transparent p-0 text-xs font-medium shadow-none focus:ring-0">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {LANG_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Notes output language */}
+            <div className="flex items-center gap-1.5 px-3 py-1.5">
+              <span className="font-medium text-muted-foreground">Notes in</span>
+              <Select value={outputLanguage} onValueChange={setOutputLanguage} disabled={busy}>
+                <SelectTrigger className="h-auto w-auto min-w-[80px] border-0 bg-transparent p-0 text-xs font-medium shadow-none focus:ring-0">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {OUTPUT_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
       )}
