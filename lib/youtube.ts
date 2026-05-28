@@ -29,25 +29,51 @@ export async function fetchOEmbed(videoId: string): Promise<Partial<VideoMeta>> 
   }
 }
 
+const USER_AGENTS = [
+  // Recent Chrome on macOS
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  // Recent Chrome on Windows
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  // iPhone Safari
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+];
+
 export async function fetchVideoTranscript(
   videoId: string,
   lang?: string,
 ): Promise<TranscriptResult> {
-  const raw = await fetchTranscript(videoId, {
-    lang,
-    retries: 2,
-    retryDelay: 800,
-    userAgent:
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  });
+  let lastError: unknown = null;
+  let raw: Awaited<ReturnType<typeof fetchTranscript>> | null = null;
 
-  const segments: TranscriptSegment[] = (raw ?? []).map((r) => ({
+  // Try each user-agent in turn — helps when YouTube starts blocking a specific UA
+  for (const userAgent of USER_AGENTS) {
+    try {
+      raw = await fetchTranscript(videoId, {
+        lang,
+        retries: 2,
+        retryDelay: 1000,
+        userAgent,
+      });
+      if (raw && raw.length > 0) break;
+    } catch (err) {
+      lastError = err;
+      // small jitter before next UA attempt
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  if (!raw || raw.length === 0) {
+    if (lastError) throw lastError;
+    return { segments: [], language: lang ?? "en", fullText: "", totalDurationSec: 0 };
+  }
+
+  const segments: TranscriptSegment[] = raw.map((r) => ({
     text: decodeEntities(r.text ?? ""),
     start: typeof r.offset === "number" ? r.offset : 0,
     duration: typeof r.duration === "number" ? r.duration : 0,
   }));
 
-  const language = (raw?.[0] && "lang" in raw[0] ? (raw[0] as { lang?: string }).lang : undefined) ?? lang ?? "en";
+  const language = (raw[0] && "lang" in raw[0] ? (raw[0] as { lang?: string }).lang : undefined) ?? lang ?? "en";
   const last = segments[segments.length - 1];
   const totalDurationSec = last ? last.start + last.duration : 0;
 

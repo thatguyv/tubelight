@@ -15,12 +15,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { parseVideoId } from "@/lib/youtube-id";
-import { fetchTranscript, streamGenerate } from "@/lib/client-api";
+import { parseVideoId, canonicalUrl } from "@/lib/youtube-id";
+import {
+  fetchManualTranscript,
+  fetchTranscript,
+  streamGenerate,
+  TranscriptFetchError,
+  type TranscriptResponse,
+} from "@/lib/client-api";
 import { saveNotes } from "@/lib/history";
 import { useNotesStore } from "@/store/notes";
 import type { NotesPayload, SectionId } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { ManualTranscriptDialog } from "@/components/manual-transcript-dialog";
 
 const LANG_OPTIONS = [
   { value: "auto", label: "Auto-detect" },
@@ -73,6 +80,9 @@ export function UrlInput({ initialUrl = "", compact = false }: UrlInputProps) {
   const [busy, setBusy] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
+  const [manualOpen, setManualOpen] = React.useState(false);
+  const [manualBusy, setManualBusy] = React.useState(false);
+
   const store = useNotesStore();
   const pendingUrl = useNotesStore((s) => s.pendingUrl);
   const pendingUrlToken = useNotesStore((s) => s.pendingUrlToken);
@@ -86,6 +96,55 @@ export function UrlInput({ initialUrl = "", compact = false }: UrlInputProps) {
   const trimmed = url.trim();
   const detectedId = React.useMemo(() => parseVideoId(trimmed), [trimmed]);
   const hasInput = trimmed.length > 0;
+
+  const generateFromTranscript = React.useCallback(
+    async (tr: TranscriptResponse) => {
+      const videoId = tr.meta.videoId;
+      const payload: NotesPayload = {
+        meta: tr.meta,
+        language: tr.transcript.language,
+        outputLanguage,
+        createdAt: Date.now(),
+        transcript: tr.transcript.segments,
+      };
+      store.setPayload(payload);
+      store.setProgress(20);
+      store.setStatus("Generating notes...");
+      router.push(`/notes/${videoId}`);
+
+      ALL_SECTIONS.forEach((s) => store.setSectionLoading(s, true));
+
+      await streamGenerate(
+        {
+          meta: tr.meta,
+          transcript: tr.transcript.segments,
+          sections: ALL_SECTIONS,
+          outputLanguage,
+        },
+        (ev) => {
+          if (ev.type === "section" && ev.id) {
+            store.setSection(ev.id, ev.data as never);
+            if (typeof ev.progress === "number") store.setProgress(20 + ev.progress * 0.8);
+          } else if (ev.type === "error" && ev.id) {
+            store.setSectionError(ev.id, ev.message ?? "Generation failed");
+          } else if (ev.type === "status") {
+            if (ev.message) store.setStatus(ev.message);
+          } else if (ev.type === "done") {
+            store.setProgress(100);
+            store.setStatus("Done");
+            store.setGenerating(false);
+          }
+        },
+      );
+
+      const finalPayload = useNotesStore.getState().payload;
+      if (finalPayload) {
+        await saveNotes(finalPayload);
+      }
+      toast.success("Notes generated", { description: tr.meta.title });
+    },
+    [outputLanguage, router, store],
+  );
 
   const runSubmit = React.useCallback(
     async (rawUrl: string) => {
@@ -113,54 +172,23 @@ export function UrlInput({ initialUrl = "", compact = false }: UrlInputProps) {
         const tr = await fetchTranscript(target, lang === "auto" ? undefined : lang);
         setProgress(20);
         setStatus("Transcript ready. Generating notes...");
-
-        const payload: NotesPayload = {
-          meta: tr.meta,
-          language: tr.transcript.language,
-          outputLanguage,
-          createdAt: Date.now(),
-          transcript: tr.transcript.segments,
-        };
-        store.setPayload(payload);
-        store.setProgress(20);
-        store.setStatus("Generating notes...");
-        router.push(`/notes/${videoId}`);
-
-        ALL_SECTIONS.forEach((s) => store.setSectionLoading(s, true));
-
-        await streamGenerate(
-          {
-            meta: tr.meta,
-            transcript: tr.transcript.segments,
-            sections: ALL_SECTIONS,
-            outputLanguage,
-          },
-          (ev) => {
-            if (ev.type === "section" && ev.id) {
-              store.setSection(ev.id, ev.data as never);
-              if (typeof ev.progress === "number") store.setProgress(20 + ev.progress * 0.8);
-            } else if (ev.type === "error" && ev.id) {
-              store.setSectionError(ev.id, ev.message ?? "Generation failed");
-            } else if (ev.type === "status") {
-              if (ev.message) store.setStatus(ev.message);
-            } else if (ev.type === "done") {
-              store.setProgress(100);
-              store.setStatus("Done");
-              store.setGenerating(false);
-            }
-          },
-        );
-
-        const finalPayload = useNotesStore.getState().payload;
-        if (finalPayload) {
-          await saveNotes(finalPayload);
-        }
-        toast.success("Notes generated", { description: tr.meta.title });
+        await generateFromTranscript(tr);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Something went wrong";
+        const reason =
+          err instanceof TranscriptFetchError ? err.reason : undefined;
         setErrorMsg(message);
-        toast.error("Failed to process video", { description: message });
         store.setGenerating(false);
+        // For blocked/no-captions/disabled cases, offer manual paste
+        if (
+          reason === "blocked" ||
+          reason === "no-captions" ||
+          reason === "captions-disabled"
+        ) {
+          setManualOpen(true);
+        } else {
+          toast.error("Failed to process video", { description: message });
+        }
       } finally {
         setBusy(false);
         busyRef.current = false;
@@ -168,7 +196,36 @@ export function UrlInput({ initialUrl = "", compact = false }: UrlInputProps) {
         setStatus("");
       }
     },
-    [lang, outputLanguage, router, store],
+    [generateFromTranscript, lang, store],
+  );
+
+  const submitManual = React.useCallback(
+    async (text: string) => {
+      const target = (trimmed || pendingUrl || "").trim();
+      const videoId = parseVideoId(target);
+      if (!videoId) {
+        toast.error("Need a valid YouTube URL above first.");
+        return;
+      }
+      setManualBusy(true);
+      setErrorMsg(null);
+      store.reset();
+      store.setGenerating(true);
+      store.setProgress(15);
+      store.setStatus("Parsing pasted transcript...");
+      try {
+        const tr = await fetchManualTranscript(target, text);
+        setManualOpen(false);
+        await generateFromTranscript(tr);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Something went wrong";
+        toast.error("Couldn't use that transcript", { description: message });
+        store.setGenerating(false);
+      } finally {
+        setManualBusy(false);
+      }
+    },
+    [trimmed, pendingUrl, store, generateFromTranscript],
   );
 
   React.useEffect(() => {
@@ -287,13 +344,34 @@ export function UrlInput({ initialUrl = "", compact = false }: UrlInputProps) {
             initial={{ opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
-            className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+            className="flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
           >
             <AlertCircle className="mt-0.5 size-4 shrink-0" />
-            <span>{errorMsg}</span>
+            <div className="flex-1 space-y-2">
+              <p>{errorMsg}</p>
+              {detectedId && (
+                <button
+                  type="button"
+                  onClick={() => setManualOpen(true)}
+                  className="text-xs font-medium text-brand underline-offset-4 hover:underline"
+                >
+                  Paste transcript manually instead →
+                </button>
+              )}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
+
+      <ManualTranscriptDialog
+        open={manualOpen}
+        onOpenChange={(o) => {
+          if (!manualBusy) setManualOpen(o);
+        }}
+        videoUrl={detectedId ? canonicalUrl(detectedId) : ""}
+        busy={manualBusy}
+        onSubmit={submitManual}
+      />
     </form>
   );
 }

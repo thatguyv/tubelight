@@ -13,6 +13,17 @@ export interface TranscriptResponse {
   transcript: TranscriptResult;
 }
 
+export class TranscriptFetchError extends Error {
+  reason?: string;
+  status?: number;
+  constructor(message: string, opts: { reason?: string; status?: number } = {}) {
+    super(message);
+    this.name = "TranscriptFetchError";
+    this.reason = opts.reason;
+    this.status = opts.status;
+  }
+}
+
 export async function fetchTranscript(url: string, lang?: string): Promise<TranscriptResponse> {
   const res = await fetch("/api/transcript", {
     method: "POST",
@@ -21,7 +32,26 @@ export async function fetchTranscript(url: string, lang?: string): Promise<Trans
   });
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(data?.error ?? "Failed to fetch transcript");
+    throw new TranscriptFetchError(data?.error ?? "Failed to fetch transcript", {
+      reason: data?.reason,
+      status: res.status,
+    });
+  }
+  return data as TranscriptResponse;
+}
+
+export async function fetchManualTranscript(
+  url: string,
+  text: string,
+): Promise<TranscriptResponse> {
+  const res = await fetch("/api/transcript-manual", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url, text }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data?.error ?? "Failed to parse pasted transcript");
   }
   return data as TranscriptResponse;
 }
