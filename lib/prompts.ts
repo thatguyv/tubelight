@@ -237,15 +237,27 @@ export async function generateMindMap(input: SectionInput): Promise<MindMapNode>
 /* ----------------------------------------------------------------- QUOTES */
 
 export async function generateQuotes(input: SectionInput): Promise<QuoteItem[]> {
+  const needsTranslation =
+    input.outputLanguage.toLowerCase() !== "english" &&
+    input.outputLanguage.toLowerCase() !== "en";
+
   const result = await runJsonPrompt<{ quotes: QuoteItem[] }>({
     system: ROLE,
-    schemaHint: '{ quotes: [{ text, start (sec), speaker?, context? }] }',
+    schemaHint: '{ quotes: [{ text, start (sec), speaker?, context?, translation? }] }',
     user: [
       header(input.meta, input.outputLanguage),
       "Task: Extract 4-8 notable verbatim quotes. Quotes should be insightful, memorable, or surprising.",
       "Use the [MM:SS] timestamps to set start seconds accurately (convert to total seconds).",
-      "Keep each quote to 1-2 sentences. Include short 'context' (1 sentence) describing what prompted it.",
-      'Schema: { "quotes": [{ "text": string, "start": number, "speaker": string, "context": string }] }',
+      "Keep each quote to 1-2 sentences.",
+      `'context' (1 sentence) must be written in ${input.outputLanguage}, describing what prompted the quote.`,
+      ...(needsTranslation
+        ? [
+            `'translation': since the output language is ${input.outputLanguage}, provide a natural translation of the verbatim quote text in ${input.outputLanguage}. The original 'text' field must remain verbatim from the transcript.`,
+          ]
+        : []),
+      needsTranslation
+        ? 'Schema: { "quotes": [{ "text": string (verbatim), "translation": string (in output language), "start": number, "speaker": string, "context": string (in output language) }] }'
+        : 'Schema: { "quotes": [{ "text": string, "start": number, "speaker": string, "context": string }] }',
       "",
       "TRANSCRIPT:",
       bodyText(input.transcript),
@@ -256,12 +268,17 @@ export async function generateQuotes(input: SectionInput): Promise<QuoteItem[]> 
 
 /* ----------------------------------------------------------------- CHAT */
 
-export function buildChatSystemPrompt(meta: VideoMeta, segments: TranscriptSegment[]): string {
+export function buildChatSystemPrompt(
+  meta: VideoMeta,
+  segments: TranscriptSegment[],
+  outputLanguage = "English",
+): string {
   return [
     "You are a knowledgeable assistant answering questions about a specific YouTube video.",
     "ONLY use information present in the transcript below to answer. If the answer is not in the transcript, say so plainly.",
     "When relevant, cite timestamps in [MM:SS] format from the transcript.",
     "Keep answers concise (1-4 short paragraphs) unless asked for detail.",
+    `IMPORTANT: Always respond in ${outputLanguage}, regardless of the language the user writes in.`,
     "",
     `Video: "${meta.title}" by ${meta.author}`,
     "",

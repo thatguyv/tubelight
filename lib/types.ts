@@ -63,6 +63,8 @@ export interface QuoteItem {
   start: number;
   speaker?: string;
   context?: string;
+  /** Translation of `text` into the output language, when different from the video language. */
+  translation?: string;
 }
 
 export interface ChatMessage {

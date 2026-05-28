@@ -28,12 +28,22 @@ export function QuotesTab() {
       {quotes.map((q, i) => (
         <Card key={i} className="relative overflow-hidden p-5">
           <Quote className="absolute right-3 top-3 size-6 text-brand/15" />
+
+          {/* Original verbatim quote */}
           <p className="text-base italic leading-relaxed">&ldquo;{q.text}&rdquo;</p>
+
+          {/* Translation (shown when output language differs from video language) */}
+          {q.translation && (
+            <p className="mt-2 rounded-lg bg-brand/5 px-3 py-2 text-sm leading-relaxed text-muted-foreground">
+              {q.translation}
+            </p>
+          )}
+
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <button
               type="button"
               onClick={() => seekTo(q.start)}
-              className="inline-flex items-center gap-1 rounded-md bg-secondary px-2 py-0.5 font-mono hover:bg-brand hover:text-brand-foreground"
+              className="inline-flex items-center gap-1 rounded-md bg-secondary px-2 py-0.5 font-mono transition hover:bg-brand hover:text-brand-foreground"
             >
               <Play className="size-3" /> {formatTime(q.start)}
             </button>

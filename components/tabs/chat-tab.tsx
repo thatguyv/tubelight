@@ -58,6 +58,7 @@ export function ChatTab() {
           meta: payload.meta,
           transcript: payload.transcript,
           messages: baseMessages,
+          outputLanguage: payload.outputLanguage,
         },
         (chunk) => {
           setChatMessages((cur) => {

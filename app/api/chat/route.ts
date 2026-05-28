@@ -9,6 +9,7 @@ interface ChatBody {
   meta: VideoMeta;
   transcript: TranscriptSegment[];
   messages: { role: "user" | "assistant"; content: string }[];
+  outputLanguage?: string;
 }
 
 export async function POST(req: Request) {
@@ -23,7 +24,11 @@ export async function POST(req: Request) {
     return new Response("Missing meta / transcript / messages", { status: 400 });
   }
 
-  const systemPrompt = buildChatSystemPrompt(body.meta, body.transcript);
+  const systemPrompt = buildChatSystemPrompt(
+    body.meta,
+    body.transcript,
+    body.outputLanguage ?? "English",
+  );
 
   const convo = body.messages
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)

@@ -110,6 +110,7 @@ export async function streamChat(
     meta: VideoMeta;
     transcript: NotesPayload["transcript"];
     messages: { role: "user" | "assistant"; content: string }[];
+    outputLanguage?: string;
   },
   onToken: (chunk: string) => void,
   signal?: AbortSignal,
